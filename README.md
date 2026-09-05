@@ -10,9 +10,11 @@ on screen and by voice what to change. No video leaves the phone.
 
 The camera API requires HTTPS, so the app has to be served from an HTTPS host. GitHub Pages is the zero-cost option:
 
-1. Merge this branch into `main`.
-2. In the repository settings open **Pages** and set **Source** to **GitHub Actions**. The `Deploy to GitHub Pages`
-   workflow publishes the site on every push to `main` (or run it manually from the Actions tab).
+1. Merge this branch into `main`. The `Deploy to GitHub Pages` workflow runs on every push to `main`
+   (or run it manually from the Actions tab) and enables Pages itself on the first run.
+2. If that first run fails with `Get Pages site failed ... Not Found`, the repository's Pages site could not be
+   created automatically: open **Settings › Pages**, set **Source** to **GitHub Actions**, and re-run the job.
+   Pages is free on public repositories; on a private one it needs a paid plan.
 3. Open `https://<your-user>.github.io/gait_analysis/` in Safari on the iPhone.
 4. Tap Share, then **Add to Home Screen**. It then launches full-screen like a native app.
 
