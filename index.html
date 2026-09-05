@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Gait Coach</title>
+  <meta name="description" content="Real-time treadmill running form analysis on your phone.">
+  <meta name="theme-color" content="#0b0f14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Gait Coach">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <section id="start" class="screen start">
+    <h1>Gait Coach</h1>
+    <p class="lede">Real-time running form analysis for the treadmill. Pose tracking runs entirely on this phone; no video leaves the device.</p>
+    <ol class="steps">
+      <li><b>Prop the phone</b> about 3 m from the treadmill, at hip height, in portrait. Side-on for stride mechanics, directly behind for hip and knee alignment.</li>
+      <li><b>Level it.</b> The horizon line and level readout go green when the camera is straight. Angles are auto-corrected for small tilts.</li>
+      <li><b>Frame the whole runner</b>, head to feet, and start running. Cues appear on screen and are spoken after a few strides.</li>
+    </ol>
+    <div class="options">
+      <label>Camera view
+        <select id="viewSelect">
+          <option value="side">Side (stride mechanics)</option>
+          <option value="rear">Rear (hip &amp; knee alignment)</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="voiceCheck" checked> Spoken cues</label>
+    </div>
+    <button id="startBtn" class="primary">Start</button>
+    <p id="status" class="status"></p>
+    <p class="fine">Reference ranges come from published 2D running-analysis literature for healthy recreational runners. This is a coaching aid, not a medical device; single-camera estimates carry a few degrees of uncertainty.</p>
+  </section>
+
+  <section id="app" class="screen" hidden>
+    <div class="stage">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div class="hud top">
+        <div id="level" class="level na"><div class="track"><div id="bubble" class="bubble"></div></div><span id="levelText">--</span></div>
+        <span id="fps" class="fps"></span>
+        <div class="spacer"></div>
+        <button id="viewBtn" class="chip">Side view</button>
+        <button id="voiceBtn" class="chip">🔊 Voice</button>
+        <button id="flipBtn" class="chip" title="Switch camera">🔄</button>
+        <button id="stopBtn" class="chip stop">Stop</button>
+      </div>
+      <p id="hint" class="hint"></p>
+    </div>
+    <div class="panel">
+      <div id="feedback"></div>
+      <details>
+        <summary>All metrics</summary>
+        <div id="metrics" class="metrics"></div>
+      </details>
+    </div>
+  </section>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
