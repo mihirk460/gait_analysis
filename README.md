@@ -21,7 +21,33 @@ The camera API requires HTTPS, so the app has to be served from an HTTPS host. G
 Requirements: iOS 16.4 or newer (WebAssembly SIMD, WebGL 2). The pose engine and model load from the MediaPipe CDN
 on first use (about 17 MB), so open it once on Wi-Fi.
 
-## Using it on the treadmill
+## Two apps
+
+| | | |
+| --- | --- | --- |
+| **Live coach** | `/` | Cues on screen and spoken while you run. Immediate, but the overlay competes with the camera. |
+| **Record &amp; review** | `/review.html` | Clean screen while you run, then play the clip back frame by frame with the skeleton, angles and coaching notes on top. |
+
+Both share the same pose engine, stride detection and reference ranges. Review mode is the more accurate
+of the two — see *Accuracy* below.
+
+## Record and review
+
+1. Open `/review.html`, pick the view and a clip length (20/40/60 s), then tap **Record a run**.
+2. A three-second countdown runs, then it records. Nothing is drawn over the runner except a thin
+   outline skeleton, a level bubble and the elapsed timer.
+3. **Stop &amp; analyze** ends the clip and goes straight to review — the landmark track is already in hand,
+   so there is no processing wait.
+4. In review: scrub the clip, step one frame at a time, jump between foot contacts with ⏮/⏭, and slow
+   playback to 0.5× or 0.25×. The strip under the transport shows what is happening at the playhead —
+   which leg, initial contact or toe-off, and the angles measured on that stride, coloured against the
+   reference range. Ticks on the scrub bar mark every foot contact, cyan for left and orange for right.
+
+The clip lives in memory for the session only. It is never written to the photo library or device
+storage, and starting another recording releases it. At 2 Mbps a 40-second clip is about 10 MB, plus
+roughly 0.5 MB for the landmark track.
+
+## Using the live coach on the treadmill
 
 - Prop the phone about 3 m from the treadmill at hip height, in portrait.
   - **Side view** measures stride mechanics: cadence, contact time, knee, shin, foot and hip angles at contact
@@ -71,29 +97,54 @@ These describe healthy recreational running, not elite targets. The app is a coa
   length in pixels), with a fallback of 0.86 m hip-to-ankle.
 - **Feedback** (`js/standards.js`): each metric has a target range, a tolerance that sets severity, and a
   spoken cue plus a longer explanation. The worst three issues are shown; the top one is spoken (Web Speech API).
+- **Recording** (`js/recorder.js`, `js/track.js`): the camera goes to a `MediaRecorder` blob while the
+  normalised landmarks are stored alongside it, three floats per point (about 0.7 MB per minute at 30 fps).
+  Playback finds the landmark frame nearest the video's `currentTime` by binary search. Safari reports an
+  infinite duration for a `MediaRecorder` blob until it is seeked, so the duration is resolved by seeking
+  and the landmark timeline is rescaled to match the encoded clip.
+- **Offline re-analysis** (`js/analyze.js`): once recording stops the whole track is re-run through the
+  analyzer with almost no smoothing (α 0.95 against 0.7 live). Live capture has to smooth hard to keep the
+  drawn skeleton from jittering, and that smoothing lags the true position, which biases every angle
+  sampled at a single instant. Reviewing has no such constraint. Against the synthetic runner this roughly
+  halves the total angle error, and `tests/analyze.test.mjs` asserts the offline pass beats the live one.
+  The re-analysis must rebuild pixels at the *capture's own* aspect ratio: the track is normalised, so
+  using any other ratio stretches one axis and skews every angle.
 
 ## Accuracy and limitations
 
 - Single-camera 2D estimates. Expect a few degrees of error on joint angles and roughly ±40 ms on contact time at
   30 fps. Angles taken at a single instant (contact, toe-off) are the least certain because the joint moves
   several degrees per frame there.
+- Measured against the synthetic runner end to end (camera → recording → review), cadence, ground contact
+  time, trunk lean and foot angle come back within about 1 %, peak knee flexion and hip extension within
+  2–3°, and **shin angle at contact reads roughly 5° low** — it rotates fastest at the moment it is sampled,
+  so a one-frame timing error moves it several degrees. Treat a borderline overstriding verdict as
+  borderline, and prefer review mode over live mode when the number matters.
 - The pose model runs at roughly 20–30 fps on a recent iPhone; lower frame rates widen the timing error.
 - The camera must be side-on (or directly behind) and level. Perspective from an angled camera biases every
   angle, which is why pitch is flagged and roll is corrected.
 - Rear-view stance detection uses ankle height and is coarser than the side view.
 - Landscape orientation is supported in code but the level compensation has only been verified in portrait.
 - Built and tested here in headless Chromium with the real pose engine and a real photo, plus unit tests on a
-  synthetic runner. It has not yet been run on a physical iPhone, so the first real session may surface Safari
-  or sensor quirks. Open with `?debug` to get a `window.__gait` handle in Safari Web Inspector.
+  synthetic runner and an end-to-end record-and-playback run. It has not yet been run on a physical iPhone, so
+  the first real session may surface Safari or sensor quirks — in particular `MediaRecorder` output format and
+  whether encoding while running pose detection holds a usable frame rate. Open either app with `?debug` to get
+  a `window.__gait` / `window.__review` handle in Safari Web Inspector.
 
 ## Development
 
 No build step. Static files, ES modules.
 
 ```
-index.html          app shell
-css/style.css
-js/app.js           camera, frame loop, HUD, voice cues
+index.html          live coach shell
+review.html         record-and-review shell
+css/style.css       shared tokens, cards, metric rows
+css/review.css      review-only layout
+js/app.js           live coach: camera, frame loop, HUD, voice cues
+js/review.js        review app: capture, playback transport, insight strip
+js/recorder.js      MediaRecorder plus the landmark track
+js/track.js         landmark storage and time lookup
+js/analyze.js       offline re-analysis of a recorded track
 js/pose.js          MediaPipe wrapper
 js/level.js         gravity-based roll/pitch
 js/gait.js          smoothing, stride events, metrics

@@ -106,3 +106,35 @@ test('rear view: pelvic drop and valgus are measured on the stance leg', () => {
   assert.ok(Math.abs(m.kneeValgus.value) < 0.5, 'straight leg has no valgus');
   assert.ok(m.cadence, 'cadence from stance starts');
 });
+
+test('history mode logs every stride event with the values measured at that instant', () => {
+  const { frames } = synthRunner({ seconds: 6 });
+  const an = new GaitAnalyzer({ view: 'side', history: true });
+  for (const f of frames) an.update(f.P, null, f.t);
+
+  const ic = an.events.filter((e) => e.type === 'IC');
+  const to = an.events.filter((e) => e.type === 'TO');
+  assert.ok(ic.length >= 12, `expected ~18 contacts, got ${ic.length}`);
+  assert.ok(Math.abs(ic.length - to.length) <= 2, 'contacts and toe-offs should pair up');
+
+  // events are in order, alternate sides, and sit inside the clip
+  for (let i = 1; i < ic.length; i++) assert.ok(ic[i].t > ic[i - 1].t, 'events ordered in time');
+  for (let i = 1; i < ic.length; i++) assert.notEqual(ic[i].side, ic[i - 1].side, 'sides alternate');
+  assert.ok(an.events.every((e) => e.t >= 0 && e.t <= 6000), 'events within the clip');
+
+  const e = ic[ic.length - 1];
+  assert.ok(Math.abs(e.values.kneeIC - 15) < 8, `kneeIC on the event ${e.values.kneeIC}`);
+  assert.ok(Math.abs(e.values.tibiaIC - 5) < 8, `tibiaIC on the event ${e.values.tibiaIC}`);
+  assert.ok(to[to.length - 1].values.gct > 150, 'toe-off carries ground contact time');
+
+  // history keeps every stride, not just the rolling window of six
+  assert.ok(an.getMetrics().kneeIC.n > 12, 'all strides retained');
+});
+
+test('without history the analyzer keeps its rolling window and still logs events', () => {
+  const { frames } = synthRunner({ seconds: 8 });
+  const an = new GaitAnalyzer({ view: 'side' });
+  for (const f of frames) an.update(f.P, null, f.t);
+  assert.equal(an.getMetrics().kneeIC.n, 12, 'six samples per side');
+  assert.ok(an.events.length > 12, 'event log is still populated');
+});
