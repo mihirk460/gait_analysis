@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LandmarkTrack } from '../js/track.js';
-import { analyzeTrack, frameScale, medianScale, REVIEW_ALPHA } from '../js/analyze.js';
+import { analyzeTrack, frameScale, medianScale } from '../js/analyze.js';
+import { DRAW_ALPHA, ANALYSIS_ALPHA } from '../js/gait.js';
 import { GaitAnalyzer, Smoother } from '../js/gait.js';
 import { synthRunner } from './synth.js';
 
@@ -35,16 +36,19 @@ test('analyzeTrack recovers the synthetic runner from a recorded track', () => {
   assert.ok(events.filter((ev) => ev.type === 'IC').length >= 25, 'a contact per step');
 });
 
-test('the offline pass is more accurate than the live smoothed pass', () => {
+test('measuring near-raw beats measuring the smoothed positions used for drawing', () => {
+  // This is why both apps run two filters over the same landmarks rather than one.
   const { frames, expected: e } = synthRunner({ seconds: 12, fps: 30, noise: 3 });
-  const live = new GaitAnalyzer({ view: 'side', history: true });
-  const sm = new Smoother(); // the alpha the live overlay uses
-  for (const f of frames) live.update(sm.apply(f.P, f.t), null, f.t);
-
-  const offline = analyzeTrack(trackFrom(frames), opts).metrics;
-  const errOf = (m) => ['kneeIC', 'tibiaIC', 'kneePeak', 'hipExtTO']
-    .reduce((s, k) => s + Math.abs(m[k].value - e[k]), 0);
-  assert.ok(errOf(offline) < errOf(live.getMetrics()), 'offline re-analysis should reduce total angle error');
+  const errOf = (alpha) => {
+    const an = new GaitAnalyzer({ view: 'side', history: true });
+    const sm = new Smoother(alpha);
+    for (const f of frames) an.update(sm.apply(f.P, f.t), null, f.t);
+    const m = an.getMetrics();
+    return ['kneeIC', 'tibiaIC', 'kneePeak', 'hipExtTO'].reduce((s, k) => s + Math.abs(m[k].value - e[k]), 0);
+  };
+  const measuring = errOf(ANALYSIS_ALPHA), drawing = errOf(DRAW_ALPHA);
+  assert.ok(ANALYSIS_ALPHA > DRAW_ALPHA, 'the analysis filter is the lighter of the two');
+  assert.ok(measuring < drawing, `near-raw error ${measuring.toFixed(1)}° should beat smoothed ${drawing.toFixed(1)}°`);
 });
 
 // Rolling the phone clockwise by `roll` makes the scene appear to rotate counter-clockwise by the
@@ -102,7 +106,7 @@ test('frameScale converts world landmarks to metres per pixel, rejecting implaus
 test('medianScale ignores an empty sample set', () => {
   assert.equal(medianScale([]), null);
   assert.equal(medianScale([2, 1, 3]), 2);
-  assert.ok(REVIEW_ALPHA > 0.9, 'review pass barely smooths');
+  assert.ok(ANALYSIS_ALPHA > 0.9, 'the analysis pass barely smooths');
 });
 
 test('the track is normalised, so the analysis must rebuild pixels at the capture aspect ratio', () => {

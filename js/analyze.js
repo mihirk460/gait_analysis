@@ -1,22 +1,18 @@
 // Offline re-analysis of a recorded landmark track.
 //
-// Live capture smooths landmark positions fairly hard so the drawn skeleton does not jitter, but
-// that smoothing lags the true position and biases every angle sampled at a single instant
-// (foot contact and toe-off). Reviewing a recording has no such constraint: the whole track is
-// already in hand, so it is re-analysed with almost no smoothing. Measured against the synthetic
-// runner this roughly halves the error, and it stays stable with landmark noise up to ~6 px
-// because the analyzer already takes medians across strides.
-import { Smoother, GaitAnalyzer } from './gait.js';
+// Both apps measure from near-raw landmarks (ANALYSIS_ALPHA) and smooth separately for drawing,
+// because smoothing lags the true position and biases every angle sampled at a single instant.
+// Re-running the stored track here additionally makes the result deterministic and independent of
+// whatever frame timing the phone happened to manage while it was also encoding video.
+import { Smoother, GaitAnalyzer, ANALYSIS_ALPHA } from './gait.js';
 import { rotatePoints, rad, median } from './geometry.js';
-
-export const REVIEW_ALPHA = 0.95;
 
 /**
  * Re-run stride detection over a LandmarkTrack.
  * width/height are the pixel space to work in; any square-preserving choice gives the same angles.
  * mPerPx seeds the metric scale captured live from MediaPipe's world landmarks (for vertical bounce).
  */
-export function analyzeTrack(track, { view = 'side', width = 1280, height = 720, alpha = REVIEW_ALPHA, mPerPx = null } = {}) {
+export function analyzeTrack(track, { view = 'side', width = 1280, height = 720, alpha = ANALYSIS_ALPHA, mPerPx = null } = {}) {
   const an = new GaitAnalyzer({ view, history: true });
   if (mPerPx > 0) an.mPerPx = mPerPx;
   const sm = new Smoother(alpha);

@@ -36,9 +36,16 @@ const MIN_EVENT_GAP_MS = 120;
 const KEEP = 6;              // samples kept per metric and side
 const FALLBACK_LEG_M = 0.86; // hip→ankle length used when no metric scale is available
 const MIN_VIS = 0.5;
+const GROUND_REFRESH_MS = 150; // the belt level barely moves, so it does not need a per-frame sort
 
+/** Heavy smoothing keeps the drawn skeleton from jittering. */
+export const DRAW_ALPHA = 0.7;
+/** Near-raw: smoothing lags the true position and biases angles sampled at contact and toe-off. */
+export const ANALYSIS_ALPHA = 0.95;
+
+/** Copies before sorting so the caller's window keeps its chronological order. */
 function percentile(arr, q) {
-  const s = [...arr].sort((a, b) => a - b);
+  const s = Float64Array.from(arr).sort();
   return s[Math.min(s.length - 1, Math.floor(q * s.length))];
 }
 
@@ -76,7 +83,7 @@ export function rearStance(P, legLen) {
 
 /** Exponential smoothing of landmark positions between frames. Resets after a gap. */
 export class Smoother {
-  constructor(alpha = 0.7) { this.alpha = alpha; this.pts = null; this.t = null; }
+  constructor(alpha = DRAW_ALPHA) { this.alpha = alpha; this.pts = null; this.t = null; }
   reset() { this.pts = null; this.t = null; }
   apply(raw, t) {
     if (!raw) { this.pts = null; return null; }
@@ -119,7 +126,7 @@ export class GaitAnalyzer {
   }
 
   _legState() {
-    return { relX: null, v: 0, phase: null, icT: null, prevIcT: null, peakKnee: 0, lastEventT: -Infinity, groundBuf: [], footY: null, vy: 0 };
+    return { relX: null, v: 0, phase: null, icT: null, prevIcT: null, peakKnee: 0, lastEventT: -Infinity, groundT: [], groundY: [], ground: null, groundAt: -Infinity, footY: null, vy: 0 };
   }
 
   setView(view) { if (view !== this.view) { this.view = view; this.reset(); } }
@@ -173,14 +180,19 @@ export class GaitAnalyzer {
       leg.relX = relX;
 
       // Belt level: the lowest point the foot reaches (robust high percentile over the recent past).
+      // Recomputed a few times a second rather than every frame; sorting the window per frame was
+      // the most expensive thing in this loop and the belt does not move.
       const footY = Math.max(P[S.heel].y, P[S.toe].y);
-      leg.groundBuf.push({ t, y: footY });
-      while (leg.groundBuf.length && t - leg.groundBuf[0].t > GROUND_WINDOW_MS) leg.groundBuf.shift();
-      const ground = percentile(leg.groundBuf.map((g) => g.y), 0.9);
-      const height = (ground - footY) / this.legLen; // 0 = on the belt
+      leg.groundT.push(t); leg.groundY.push(footY);
+      while (leg.groundT.length && t - leg.groundT[0] > GROUND_WINDOW_MS) { leg.groundT.shift(); leg.groundY.shift(); }
+      if (leg.ground == null || t - leg.groundAt > GROUND_REFRESH_MS) {
+        leg.ground = percentile(leg.groundY, 0.9);
+        leg.groundAt = t;
+      }
+      const height = (leg.ground - footY) / this.legLen; // 0 = on the belt
       if (leg.footY != null && dt > 0) leg.vy = (footY - leg.footY) / dt / this.legLen; // positive = moving down
       leg.footY = footY;
-      if (dt <= 0 || leg.groundBuf.length < 10) continue;
+      if (dt <= 0 || leg.groundT.length < 10) continue;
 
       const kneeFlex = side === 'L' ? kneeL : kneeR;
       if (leg.phase === 'stance') leg.peakKnee = Math.max(leg.peakKnee, kneeFlex);
@@ -199,7 +211,11 @@ export class GaitAnalyzer {
         leg.phase = 'swing'; leg.lastEventT = t;
       }
     }
-    this.prevP = P.map((p) => ({ x: p.x, y: p.y, v: p.v }));
+    if (!this.prevP) this.prevP = P.map((p) => ({ x: p.x, y: p.y, v: p.v }));
+    else for (let i = 0; i < P.length; i++) {
+      const a = this.prevP[i], b = P[i];
+      a.x = b.x; a.y = b.y; a.v = b.v;
+    }
   }
 
   _onContact(side, t, frames) {

@@ -1,7 +1,7 @@
 import { ASSETS, DEBUG } from './config.js';
 import { createPose } from './pose.js';
 import { LevelSensor } from './level.js';
-import { Smoother, GaitAnalyzer } from './gait.js';
+import { Smoother, GaitAnalyzer, DRAW_ALPHA, ANALYSIS_ALPHA } from './gait.js';
 import { rotatePoints, rad } from './geometry.js';
 import { evaluate, standardsForView, asymmetry, fmt } from './standards.js';
 import { drawSkeleton, drawHorizon } from './draw.js';
@@ -19,7 +19,11 @@ const ctx = ui.canvas.getContext('2d');
 
 const state = {
   running: false, facing: 'environment', view: 'side', voice: true,
-  stream: null, pose: null, level: new LevelSensor(), smoother: new Smoother(),
+  stream: null, pose: null, level: new LevelSensor(),
+  // Two filters over the same landmarks: a heavy one so the drawn skeleton is steady, and a
+  // near-raw one for measurement, because smoothing lags the true position and biases every
+  // angle sampled at a single instant (foot contact, toe-off).
+  drawSmoother: new Smoother(DRAW_ALPHA), analysisSmoother: new Smoother(ANALYSIS_ALPHA),
   analyzer: new GaitAnalyzer({ view: 'side' }), fps: 0, lastFrameT: 0, lastUiT: 0, lastLevelT: 0,
 };
 
@@ -66,7 +70,7 @@ async function start() {
     state.running = true;
     if (state.voice) coach.speak('Gait coach ready.'); // also unlocks speech on iOS
     ui.hint.textContent = levelOk ? '' : 'Motion sensor unavailable: auto-level off, hold the phone level.';
-    state.analyzer.reset(); state.smoother.reset();
+    state.analyzer.reset(); resetFilters();
     scheduleFrame();
   } catch (err) {
     showError(err);
@@ -94,7 +98,7 @@ async function openCamera() {
   await ui.video.play();
   const mirror = state.facing === 'user';
   ui.video.classList.toggle('mirror', mirror); ui.canvas.classList.toggle('mirror', mirror);
-  state.smoother.reset(); state.analyzer.reset();
+  resetFilters(); state.analyzer.reset();
 }
 
 function setView(view) {
@@ -109,6 +113,8 @@ function setVoice(on) {
   ui.voiceBtn.textContent = on ? '🔊 Voice' : '🔇 Voice';
   ui.voiceBtn.classList.toggle('off', !on);
 }
+
+function resetFilters() { state.drawSmoother.reset(); state.analysisSmoother.reset(); }
 
 function setStatus(msg) { ui.status.textContent = msg; ui.status.classList.remove('error'); }
 function showError(err) {
@@ -141,15 +147,16 @@ function onFrame() {
     let det = { landmarks: null, world: null };
     try { det = state.pose.detect(video, now); } catch (err) { if (DEBUG) console.warn(err); }
     const raw = det.landmarks ? det.landmarks.map((p) => ({ x: p.x * W, y: p.y * H, v: p.visibility ?? 1 })) : null;
-    const pts = state.smoother.apply(raw, now);
+    const drawPts = state.drawSmoother.apply(raw, now);
+    const measurePts = state.analysisSmoother.apply(raw, now);
 
     const roll = state.level.available ? state.level.roll : 0;
     // Auto-level: undo the camera roll so "vertical" in every angle means gravity, not the phone's edge.
-    const levelled = pts ? rotatePoints(pts, W / 2, H / 2, rad(roll)) : null;
+    const levelled = measurePts ? rotatePoints(measurePts, W / 2, H / 2, rad(roll)) : null;
     state.analyzer.update(levelled, det.world, now);
 
     ctx.clearRect(0, 0, W, H);
-    if (pts) drawSkeleton(ctx, pts, state.analyzer.tracking ? state.analyzer.live : null, { mirror: state.facing === 'user', view: state.view });
+    if (drawPts) drawSkeleton(ctx, drawPts, state.analyzer.tracking ? state.analyzer.live : null, { mirror: state.facing === 'user', view: state.view });
     if (state.level.available) drawHorizon(ctx, W, H, roll);
 
     if (now - state.lastLevelT > 100) { state.lastLevelT = now; renderLevel(); }
@@ -179,8 +186,7 @@ function renderLevel() {
 function renderFeedback(rows) {
   const measured = rows.filter((r) => r.status !== 'na');
   if (!measured.length) {
-    ui.feedback.innerHTML = `<div class="card wait"><h3>${state.analyzer.tracking ? 'Analyzing strides…' : 'Looking for a runner'}</h3><p>${state.analyzer.tracking ? 'Keep running; feedback appears after a few steps.' : 'The whole body, head to feet, must be in frame.'}</p></div>`;
-    return;
+    return setHtml(ui.feedback, `<div class="card wait"><h3>${state.analyzer.tracking ? 'Analyzing strides…' : 'Looking for a runner'}</h3><p>${state.analyzer.tracking ? 'Keep running; feedback appears after a few steps.' : 'The whole body, head to feet, must be in frame.'}</p></div>`);
   }
   const issues = rows.filter((r) => r.severity > 0).slice(0, 3);
   const good = measured.filter((r) => r.status === 'ok');
@@ -192,17 +198,25 @@ function renderFeedback(rows) {
       ${asymmetry(r) ? `<p class="asym">${asymmetry(r)}</p>` : ''}
     </div>`).join('');
   if (good.length) html += `<div class="card ok"><h3>${issues.length ? 'Within range' : 'Form within reference ranges'}</h3><p>${good.map((r) => r.label).join(' · ')}</p></div>`;
-  ui.feedback.innerHTML = html;
+  setHtml(ui.feedback, html);
+}
+
+/** Rebuilding identical markup four times a second reflows the panel for nothing. */
+function setHtml(el, html) {
+  if (el.__html === html) return;
+  el.__html = html;
+  el.innerHTML = html;
 }
 
 function renderMetrics(rows) {
   const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
-  ui.metrics.innerHTML = standardsForView(state.view).map((s) => {
+  const html = standardsForView(state.view).map((s) => {
     const r = byId[s.id];
     const dot = !r || r.status === 'na' ? 'na' : r.status === 'ok' ? 'ok' : r.severity >= 1 ? 'bad' : 'warn';
     const lr = r && r.L != null && r.R != null ? `<span class="lr">L ${fmt(r, r.L)} · R ${fmt(r, r.R)}</span>` : '';
     return `<div class="metric"><span class="dot ${dot}"></span><span class="name">${s.label}</span><span class="val">${r ? fmt(r) : '–'}</span>${lr}<span class="tgt">${s.target[0]}–${s.target[1]}${s.unit === '°' ? '°' : ' ' + s.unit}</span></div>`;
   }).join('');
+  setHtml(ui.metrics, html);
 }
 
 document.addEventListener('visibilitychange', () => { if (document.hidden && state.running) stop(); });

@@ -28,8 +28,8 @@ on first use (about 17 MB), so open it once on Wi-Fi.
 | **Live coach** | `/` | Cues on screen and spoken while you run. Immediate, but the overlay competes with the camera. |
 | **Record &amp; review** | `/review.html` | Clean screen while you run, then play the clip back frame by frame with the skeleton, angles and coaching notes on top. |
 
-Both share the same pose engine, stride detection and reference ranges. Review mode is the more accurate
-of the two — see *Accuracy* below.
+Both share the same pose engine, stride detection, filtering and reference ranges, so they report the same
+numbers. Review mode is the one to use when you want to see *why* a number came out the way it did.
 
 ## Record and review
 
@@ -102,13 +102,17 @@ These describe healthy recreational running, not elite targets. The app is a coa
   Playback finds the landmark frame nearest the video's `currentTime` by binary search. Safari reports an
   infinite duration for a `MediaRecorder` blob until it is seeked, so the duration is resolved by seeking
   and the landmark timeline is rescaled to match the encoded clip.
+- **Two filters over the same landmarks** (`DRAW_ALPHA` 0.7, `ANALYSIS_ALPHA` 0.95 in `js/gait.js`):
+  a drawn skeleton has to be smoothed hard or it jitters, but that smoothing lags the true position and
+  biases every angle sampled at a single instant (foot contact, toe-off). Both apps therefore smooth
+  heavily for drawing and measure from near-raw positions. Against the synthetic runner with 3 px of
+  landmark noise this cuts the mean angle error from 2.9° to 1.5°; `tests/analyze.test.mjs` asserts the
+  near-raw pass beats the drawing pass, so the split cannot be undone by accident.
 - **Offline re-analysis** (`js/analyze.js`): once recording stops the whole track is re-run through the
-  analyzer with almost no smoothing (α 0.95 against 0.7 live). Live capture has to smooth hard to keep the
-  drawn skeleton from jittering, and that smoothing lags the true position, which biases every angle
-  sampled at a single instant. Reviewing has no such constraint. Against the synthetic runner this roughly
-  halves the total angle error, and `tests/analyze.test.mjs` asserts the offline pass beats the live one.
-  The re-analysis must rebuild pixels at the *capture's own* aspect ratio: the track is normalised, so
-  using any other ratio stretches one axis and skews every angle.
+  analyzer. The numbers now match what live mode would produce, but the result is deterministic and no
+  longer depends on whatever frame timing the phone managed while it was also encoding video. The pass
+  must rebuild pixels at the *capture's own* aspect ratio: the track is normalised, so any other ratio
+  stretches one axis and skews every angle.
 
 ## Accuracy and limitations
 
@@ -117,9 +121,9 @@ These describe healthy recreational running, not elite targets. The app is a coa
   several degrees per frame there.
 - Measured against the synthetic runner end to end (camera → recording → review), cadence, ground contact
   time, trunk lean and foot angle come back within about 1 %, peak knee flexion and hip extension within
-  2–3°, and **shin angle at contact reads roughly 5° low** — it rotates fastest at the moment it is sampled,
-  so a one-frame timing error moves it several degrees. Treat a borderline overstriding verdict as
-  borderline, and prefer review mode over live mode when the number matters.
+  2–3°, and **shin angle at contact reads roughly 4–5° low** — it rotates fastest at the moment it is
+  sampled, so a one-frame timing error moves it several degrees. Treat a borderline overstriding verdict
+  as borderline.
 - The pose model runs at roughly 20–30 fps on a recent iPhone; lower frame rates widen the timing error.
 - The camera must be side-on (or directly behind) and level. Perspective from an angled camera biases every
   angle, which is why pitch is flagged and roll is corrected.
@@ -158,6 +162,20 @@ tests/              node:test suites; tests/synth.js is a kinematic treadmill ru
 npm test                       # unit tests on synthetic strides, geometry, level maths
 python3 -m http.server 8080    # local preview (camera only works on localhost or HTTPS)
 ```
+
+Performance notes, measured over a 60 s synthetic clip (1800 frames):
+
+| | before | after |
+| --- | --- | --- |
+| stride analysis | 28.4 µs/frame | 6.8 µs/frame |
+| landmark track store + read | 23.4 µs/frame | 3.3 µs/frame |
+
+The analysis win came from caching the belt-level estimate: it was sorting a 75-sample window twice per
+frame, and the treadmill belt does not move, so it is now recomputed a few times a second. The track win
+came from replacing one `Float32Array` per frame with a single buffer that doubles as needed — a 60 s clip
+is one 0.7 MB allocation instead of 1800 small ones. Both panels also skip the DOM write when the markup
+is unchanged, which matters most in review mode, where the insight strip is evaluated on every animation
+frame while the clip plays.
 
 ## References
 

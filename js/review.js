@@ -32,7 +32,7 @@ const revCtx = ui.revOverlay.getContext('2d');
 
 const state = {
   phase: 'setup', view: 'side', maxMs: 40000,
-  stream: null, pose: null, level: null, smoother: new Smoother(), scales: [],
+  stream: null, pose: null, level: null, drawSmoother: new Smoother(), scales: [],
   recorder: null, clip: null, raf: 0, frameMs: 33, capW: 0, capH: 0,
 };
 
@@ -55,7 +55,7 @@ async function begin() {
     ui.setup.hidden = true; ui.capture.hidden = false;
     ui.capHint.textContent = levelOk ? '' : 'Motion sensor unavailable: auto-level off, hold the phone level.';
     state.phase = 'countdown';
-    state.smoother.reset();
+    state.drawSmoother.reset();
     loopCapture();
     await countdown(3);
     if (state.phase !== 'countdown') return; // stopped during the countdown
@@ -91,7 +91,7 @@ function countdown(n) {
 
 function startRecording() {
   state.scales = [];
-  state.smoother.reset();
+  state.drawSmoother.reset();
   state.recorder = new SessionRecorder({ maxMs: state.maxMs, onLimit: () => finish() });
   state.recorder.start(state.stream);
   state.phase = 'recording';
@@ -125,7 +125,7 @@ function drawCaptureFrame() {
 
   const roll = state.level?.available ? state.level.roll : 0;
   const raw = det.landmarks ? det.landmarks.map((p) => ({ x: p.x * W, y: p.y * H, v: p.visibility ?? 1 })) : null;
-  const pts = state.smoother.apply(raw, now);
+  const pts = state.drawSmoother.apply(raw, now);
 
   if (state.phase === 'recording' && state.recorder) {
     state.recorder.addFrame(det.landmarks, roll);
@@ -335,7 +335,10 @@ function renderNow(t, P) {
   } else if (!P) {
     parts.push('<span class="idle">no runner detected in this frame</span>');
   }
-  ui.now.innerHTML = parts.join('') || '<span class="idle">between strides</span>';
+  const html = parts.join('') || '<span class="idle">between strides</span>';
+  // renderNow runs on every animation frame while the clip plays; the markup only changes at
+  // stride events, so skip the rebuild when it is identical.
+  if (ui.now.__html !== html) { ui.now.__html = html; ui.now.innerHTML = html; }
 }
 
 function renderTicks(clip) {

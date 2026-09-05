@@ -22,33 +22,43 @@ export function nearestIndex(ts, t) {
 }
 
 export class LandmarkTrack {
-  constructor() {
+  constructor(capacity = 512) {
     this.ts = [];      // ms from the start of the recording
     this.rolls = [];   // camera roll (deg) at that instant
-    this.data = [];    // Float32Array(99) per frame
+    // One buffer that doubles as needed, rather than a Float32Array per frame: a 60 s clip is
+    // one 0.7 MB allocation instead of 1800 small ones the collector has to walk.
+    this.data = new Float32Array(capacity * STRIDE);
+    this.n = 0;
   }
 
-  get length() { return this.ts.length; }
-  get duration() { return this.ts.length ? this.ts[this.ts.length - 1] : 0; }
-  /** Approximate memory held by the landmark track, in bytes. */
-  get bytes() { return this.ts.length * (STRIDE * 4 + 16); }
+  get length() { return this.n; }
+  get duration() { return this.n ? this.ts[this.n - 1] : 0; }
+  /** Memory held by the landmark track, in bytes. */
+  get bytes() { return this.data.byteLength + this.n * 16; }
 
   /** landmarks: MediaPipe normalised landmarks, or null when nothing was detected in this frame. */
   push(t, landmarks, roll = 0) {
-    const buf = new Float32Array(STRIDE);
+    if ((this.n + 1) * STRIDE > this.data.length) {
+      const grown = new Float32Array(this.data.length * 2);
+      grown.set(this.data);
+      this.data = grown;
+    }
+    const off = this.n * STRIDE;
     if (landmarks) {
       for (let i = 0; i < POINTS; i++) {
-        const p = landmarks[i];
-        buf[i * 3] = p.x; buf[i * 3 + 1] = p.y; buf[i * 3 + 2] = p.visibility ?? 1;
+        const p = landmarks[i], o = off + i * 3;
+        this.data[o] = p.x; this.data[o + 1] = p.y; this.data[o + 2] = p.visibility ?? 1;
       }
-    } // no detection leaves the frame all-zero, and visibility 0 marks it as untracked
-    this.ts.push(t); this.rolls.push(roll); this.data.push(buf);
+    } else {
+      this.data.fill(0, off, off + STRIDE); // visibility 0 marks the frame as untracked
+    }
+    this.ts.push(t); this.rolls.push(roll); this.n++;
   }
 
   /** Multiply every timestamp by `factor`, to fit the track to the real duration of the encoded video. */
   rescale(factor) {
     if (!(factor > 0) || !Number.isFinite(factor) || factor === 1) return;
-    for (let i = 0; i < this.ts.length; i++) this.ts[i] *= factor;
+    for (let i = 0; i < this.n; i++) this.ts[i] *= factor;
   }
 
   indexAt(t) { return nearestIndex(this.ts, t); }
@@ -61,10 +71,14 @@ export class LandmarkTrack {
   }
 
   pointsAtIndex(i, w, h) {
-    const buf = this.data[i];
-    if (!buf || buf[2] === 0) return null; // visibility 0 on the nose: nothing was detected
+    if (i < 0 || i >= this.n) return null;
+    const off = i * STRIDE;
+    if (this.data[off + 2] === 0) return null; // visibility 0 on the nose: nothing was detected
     const pts = new Array(POINTS);
-    for (let j = 0; j < POINTS; j++) pts[j] = { x: buf[j * 3] * w, y: buf[j * 3 + 1] * h, v: buf[j * 3 + 2] };
+    for (let j = 0; j < POINTS; j++) {
+      const o = off + j * 3;
+      pts[j] = { x: this.data[o] * w, y: this.data[o + 1] * h, v: this.data[o + 2] };
+    }
     return pts;
   }
 
