@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Gait Review</title>
+  <meta name="description" content="Record a treadmill run, then step through it frame by frame with the analysis overlaid.">
+  <meta name="theme-color" content="#0b0f14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Gait Review">
+  <link rel="manifest" href="review.webmanifest">
+  <link rel="icon" href="icons/icon-review.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-review-180.png">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/review.css">
+</head>
+<body>
+  <!-- 1. setup -->
+  <section id="setup" class="screen start">
+    <h1>Gait Review</h1>
+    <p class="lede">Record a short run, then play it back frame by frame with the skeleton, joint angles and
+      coaching notes on top. Nothing is shown over the camera while you run.</p>
+    <ol class="steps">
+      <li><b>Prop the phone</b> about 3 m away at hip height. Side-on for stride mechanics, directly behind for
+        hip and knee alignment.</li>
+      <li><b>Tap record</b>, then run normally. A three-second countdown gives you time to settle.</li>
+      <li><b>Stop</b> and review: scrub the clip, step a frame at a time, and jump between foot contacts.</li>
+    </ol>
+    <div class="options">
+      <label>Camera view
+        <select id="viewSelect">
+          <option value="side">Side (stride mechanics)</option>
+          <option value="rear">Rear (hip &amp; knee alignment)</option>
+        </select>
+      </label>
+      <label>Clip length
+        <select id="lenSelect">
+          <option value="20">20 seconds</option>
+          <option value="40" selected>40 seconds</option>
+          <option value="60">60 seconds</option>
+        </select>
+      </label>
+    </div>
+    <button id="startBtn" class="primary">Record a run</button>
+    <p id="status" class="status"></p>
+    <p class="fine">The clip is held in memory for this session only and is never written to your photo library or
+      device storage; starting a new recording discards the previous one. About 2 MB per 10 seconds.
+      <a href="./">Live coaching mode →</a></p>
+  </section>
+
+  <!-- 2. capture -->
+  <section id="capture" class="screen" hidden>
+    <div class="frame" id="capFrame">
+      <video id="camera" playsinline muted autoplay></video>
+      <canvas id="camOverlay"></canvas>
+      <div id="countdown" class="countdown" hidden></div>
+    </div>
+    <div class="capbar">
+      <div id="capLevel" class="level na"><div class="track"><div id="capBubble" class="bubble"></div></div><span id="capLevelText">--</span></div>
+      <span id="trackChip" class="chip muted">Looking for a runner</span>
+    </div>
+    <div class="recrow">
+      <span class="recdot" id="recDot"></span>
+      <span id="recTime" class="rectime">0:00</span>
+      <div class="recbar"><div id="recFill"></div></div>
+    </div>
+    <button id="stopBtn" class="primary danger">Stop &amp; analyze</button>
+    <p id="capHint" class="fine"></p>
+  </section>
+
+  <!-- 3. review -->
+  <section id="review" class="screen" hidden>
+    <div class="frame" id="revFrame">
+      <video id="player" playsinline webkit-playsinline></video>
+      <canvas id="revOverlay"></canvas>
+    </div>
+
+    <div class="scrub">
+      <div id="ticks" class="ticks"></div>
+      <input type="range" id="seek" min="0" max="1000" step="1" value="0" aria-label="Scrub">
+    </div>
+    <div class="transport">
+      <button id="prevEv" class="tbtn" title="Previous event">⏮</button>
+      <button id="stepBack" class="tbtn" title="Back one frame">◀</button>
+      <button id="playBtn" class="tbtn play" title="Play">▶</button>
+      <button id="stepFwd" class="tbtn" title="Forward one frame">▶</button>
+      <button id="nextEv" class="tbtn" title="Next event">⏭</button>
+      <span id="timeLabel" class="tlabel">0.00 s</span>
+      <select id="speed" class="speed" aria-label="Playback speed">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+      </select>
+    </div>
+
+    <div id="now" class="now"></div>
+
+    <div class="panel static">
+      <div id="revFeedback"></div>
+      <details open>
+        <summary>All metrics</summary>
+        <div id="revMetrics" class="metrics"></div>
+      </details>
+      <div class="actions">
+        <button id="againBtn" class="primary">Record another run</button>
+        <p id="clipInfo" class="fine"></p>
+      </div>
+    </div>
+  </section>
+
+  <script type="module" src="js/review.js"></script>
+</body>
+</html>

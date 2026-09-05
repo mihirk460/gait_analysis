@@ -36,15 +36,54 @@ const MIN_EVENT_GAP_MS = 120;
 const KEEP = 6;              // samples kept per metric and side
 const FALLBACK_LEG_M = 0.86; // hip→ankle length used when no metric scale is available
 const MIN_VIS = 0.5;
+const GROUND_REFRESH_MS = 150; // the belt level barely moves, so it does not need a per-frame sort
 
+/** Heavy smoothing keeps the drawn skeleton from jittering. */
+export const DRAW_ALPHA = 0.7;
+/** Near-raw: smoothing lags the true position and biases angles sampled at contact and toe-off. */
+export const ANALYSIS_ALPHA = 0.95;
+
+/** Copies before sorting so the caller's window keeps its chronological order. */
 function percentile(arr, q) {
-  const s = [...arr].sort((a, b) => a - b);
+  const s = Float64Array.from(arr).sort();
   return s[Math.min(s.length - 1, Math.floor(q * s.length))];
+}
+
+/** Per-frame sagittal angles. `dir` is +1 when the runner faces screen-right. */
+export function sideAngles(P, dir = 1) {
+  const hipMid = mid(P[23], P[24]), shMid = mid(P[11], P[12]);
+  return {
+    trunk: leanFromVertical(hipMid, shMid, dir),
+    elbowL: angleAt(P[11], P[13], P[15]),
+    elbowR: angleAt(P[12], P[14], P[16]),
+    kneeL: 180 - angleAt(P[23], P[25], P[27]),
+    kneeR: 180 - angleAt(P[24], P[26], P[28]),
+  };
+}
+
+/** Per-frame frontal angles, given which leg is in stance ('L', 'R' or null). */
+export function rearAngles(P, stance = null) {
+  const hipMid = mid(P[23], P[24]), shMid = mid(P[11], P[12]);
+  const out = { trunkLat: Math.abs(deg(Math.atan2(shMid.x - hipMid.x, hipMid.y - shMid.y))), stance };
+  if (stance) {
+    const S = SIDES[stance], C = SIDES[stance === 'L' ? 'R' : 'L'];
+    out.drop = deg(Math.atan2(P[C.hip].y - P[S.hip].y, Math.abs(P[C.hip].x - P[S.hip].x)));
+    const medial = Math.sign(hipMid.x - P[S.hip].x) || 1;
+    const fppa = 180 - angleAt(P[S.hip], P[S.knee], P[S.ankle]);
+    out.valgus = (P[S.knee].x - (P[S.hip].x + P[S.ankle].x) / 2) * medial > 0 ? fppa : -fppa;
+  }
+  return out;
+}
+
+/** Which leg is in stance in a rear view, from ankle height. Null when neither is clearly lower. */
+export function rearStance(P, legLen) {
+  const diff = (P[27].y - P[28].y) / legLen;
+  return diff > 0.12 ? 'L' : diff < -0.12 ? 'R' : null;
 }
 
 /** Exponential smoothing of landmark positions between frames. Resets after a gap. */
 export class Smoother {
-  constructor(alpha = 0.7) { this.alpha = alpha; this.pts = null; this.t = null; }
+  constructor(alpha = DRAW_ALPHA) { this.alpha = alpha; this.pts = null; this.t = null; }
   reset() { this.pts = null; this.t = null; }
   apply(raw, t) {
     if (!raw) { this.pts = null; return null; }
@@ -63,7 +102,12 @@ export class Smoother {
 }
 
 export class GaitAnalyzer {
-  constructor({ view = 'side' } = {}) { this.view = view; this.reset(); }
+  /** history: keep every stride's samples and a timestamped event log (used by the review app). */
+  constructor({ view = 'side', history = false } = {}) {
+    this.view = view;
+    this.keep = history ? Infinity : KEEP;
+    this.reset();
+  }
 
   reset() {
     this.prevT = null;
@@ -72,6 +116,7 @@ export class GaitAnalyzer {
     this.legs = { L: this._legState(), R: this._legState() };
     this.icTimes = [];
     this.samples = {};
+    this.events = [];
     this.frameBuf = [];
     this.stanceLeg = null; this.rear = null;
     this.lastEvent = null;
@@ -81,7 +126,7 @@ export class GaitAnalyzer {
   }
 
   _legState() {
-    return { relX: null, v: 0, phase: null, icT: null, prevIcT: null, peakKnee: 0, lastEventT: -Infinity, groundBuf: [], footY: null, vy: 0 };
+    return { relX: null, v: 0, phase: null, icT: null, prevIcT: null, peakKnee: 0, lastEventT: -Infinity, groundT: [], groundY: [], ground: null, groundAt: -Infinity, footY: null, vy: 0 };
   }
 
   setView(view) { if (view !== this.view) { this.view = view; this.reset(); } }
@@ -123,9 +168,7 @@ export class GaitAnalyzer {
     if (Math.abs(this.dirVotes) >= 5) this.dir = this.dirVotes > 0 ? 1 : -1;
     const dir = this.dir;
 
-    const trunk = leanFromVertical(hipMid, shMid, dir);
-    const elbowL = angleAt(P[11], P[13], P[15]), elbowR = angleAt(P[12], P[14], P[16]);
-    const kneeL = 180 - angleAt(P[23], P[25], P[27]), kneeR = 180 - angleAt(P[24], P[26], P[28]);
+    const { trunk, elbowL, elbowR, kneeL, kneeR } = sideAngles(P, dir);
     this.frameBuf.push({ t, trunk, elbowL, elbowR, hipY: hipMid.y });
     while (this.frameBuf.length && t - this.frameBuf[0].t > 3000) this.frameBuf.shift();
     this.live = { dir, trunk, elbowL, elbowR, kneeL, kneeR, phaseL: this.legs.L.phase, phaseR: this.legs.R.phase };
@@ -137,14 +180,19 @@ export class GaitAnalyzer {
       leg.relX = relX;
 
       // Belt level: the lowest point the foot reaches (robust high percentile over the recent past).
+      // Recomputed a few times a second rather than every frame; sorting the window per frame was
+      // the most expensive thing in this loop and the belt does not move.
       const footY = Math.max(P[S.heel].y, P[S.toe].y);
-      leg.groundBuf.push({ t, y: footY });
-      while (leg.groundBuf.length && t - leg.groundBuf[0].t > GROUND_WINDOW_MS) leg.groundBuf.shift();
-      const ground = percentile(leg.groundBuf.map((g) => g.y), 0.9);
-      const height = (ground - footY) / this.legLen; // 0 = on the belt
+      leg.groundT.push(t); leg.groundY.push(footY);
+      while (leg.groundT.length && t - leg.groundT[0] > GROUND_WINDOW_MS) { leg.groundT.shift(); leg.groundY.shift(); }
+      if (leg.ground == null || t - leg.groundAt > GROUND_REFRESH_MS) {
+        leg.ground = percentile(leg.groundY, 0.9);
+        leg.groundAt = t;
+      }
+      const height = (leg.ground - footY) / this.legLen; // 0 = on the belt
       if (leg.footY != null && dt > 0) leg.vy = (footY - leg.footY) / dt / this.legLen; // positive = moving down
       leg.footY = footY;
-      if (dt <= 0 || leg.groundBuf.length < 10) continue;
+      if (dt <= 0 || leg.groundT.length < 10) continue;
 
       const kneeFlex = side === 'L' ? kneeL : kneeR;
       if (leg.phase === 'stance') leg.peakKnee = Math.max(leg.peakKnee, kneeFlex);
@@ -163,7 +211,11 @@ export class GaitAnalyzer {
         leg.phase = 'swing'; leg.lastEventT = t;
       }
     }
-    this.prevP = P.map((p) => ({ x: p.x, y: p.y, v: p.v }));
+    if (!this.prevP) this.prevP = P.map((p) => ({ x: p.x, y: p.y, v: p.v }));
+    else for (let i = 0; i < P.length; i++) {
+      const a = this.prevP[i], b = P[i];
+      a.x = b.x; a.y = b.y; a.v = b.v;
+    }
   }
 
   _onContact(side, t, frames) {
@@ -171,69 +223,66 @@ export class GaitAnalyzer {
     const avg = (fn) => mean(frames.map(fn));
     const kneeFlex = avg((P) => 180 - angleAt(P[S.hip], P[S.knee], P[S.ankle]));
     leg.icT = t; leg.peakKnee = kneeFlex;
-    this._push('kneeIC', side, kneeFlex);
-    this._push('tibiaIC', side, avg((P) => angleFromVertical(P[S.knee], P[S.ankle], this.dir)));
-    this._push('footIC', side, avg((P) => footAngle(P[S.heel], P[S.toe], this.dir)));
-    this._pushCadence(t, side);
+    const values = {};
+    this._push('kneeIC', side, kneeFlex, values);
+    this._push('tibiaIC', side, avg((P) => angleFromVertical(P[S.knee], P[S.ankle], this.dir)), values);
+    this._push('footIC', side, avg((P) => footAngle(P[S.heel], P[S.toe], this.dir)), values);
+    this._pushCadence(t, side, values);
 
     // Metrics that span the previous full gait cycle of this leg (IC → IC).
     if (leg.prevIcT != null && t - leg.prevIcT < 2000) {
       const win = this.frameBuf.filter((f) => f.t > leg.prevIcT && f.t <= t);
       if (win.length >= 4) {
-        this._push('trunkLean', side, mean(win.map((f) => f.trunk)));
-        this._push('elbow', side, mean(win.map((f) => (side === 'L' ? f.elbowL : f.elbowR))));
+        this._push('trunkLean', side, mean(win.map((f) => f.trunk)), values);
+        this._push('elbow', side, mean(win.map((f) => (side === 'L' ? f.elbowL : f.elbowR))), values);
         const ys = win.map((f) => f.hipY);
         const rangePx = Math.max(...ys) - Math.min(...ys);
         const mpp = this.mPerPx ?? FALLBACK_LEG_M / this.legLen;
-        this._push('vertOsc', side, rangePx * mpp * 100);
+        this._push('vertOsc', side, rangePx * mpp * 100, values);
       }
     }
     leg.prevIcT = t;
     this.lastEvent = { type: 'IC', side, t };
+    this.events.push({ t, type: 'IC', side, values });
   }
 
   _onToeOff(side, t, frames) {
-    const S = SIDES[side], leg = this.legs[side];
+    const S = SIDES[side], leg = this.legs[side], values = {};
     if (leg.icT != null) {
       const gct = t - leg.icT;
-      if (gct > 80 && gct < 700) this._push('gct', side, gct);
+      if (gct > 80 && gct < 700) this._push('gct', side, gct, values);
     }
-    this._push('kneePeak', side, leg.peakKnee);
+    this._push('kneePeak', side, leg.peakKnee, values);
     // Hip extension relative to the trunk (anatomical hip angle), positive = thigh behind the trunk line.
     const hipExt = mean(frames.map((P) => {
       const tdx = P[S.hip].x - P[S.shoulder].x, tdy = P[S.hip].y - P[S.shoulder].y;
       const thx = P[S.knee].x - P[S.hip].x, thy = P[S.knee].y - P[S.hip].y;
       return this.dir * signedAngle(tdx, tdy, thx, thy);
     }));
-    this._push('hipExtTO', side, hipExt);
+    this._push('hipExtTO', side, hipExt, values);
     this.lastEvent = { type: 'TO', side, t };
+    this.events.push({ t, type: 'TO', side, values });
   }
 
-  _pushCadence(t, side) {
+  _pushCadence(t, side, bag) {
     this.icTimes.push(t);
     if (this.icTimes.length > 9) this.icTimes.shift();
     const n = this.icTimes.length;
     if (n >= 4) {
       const spm = (60000 * (n - 1)) / (this.icTimes[n - 1] - this.icTimes[0]);
-      if (spm > 100 && spm < 260) this._push('cadence', side, spm);
+      if (spm > 100 && spm < 260) this._push('cadence', side, spm, bag);
     }
   }
 
   // ---------------- rear view ----------------
   _updateRear(P, hipMid, shMid, t) {
-    const diff = (P[27].y - P[28].y) / this.legLen; // positive: left ankle lower (left in stance)
-    let stance = null;
-    if (diff > 0.12) stance = 'L'; else if (diff < -0.12) stance = 'R';
-    const trunkLat = Math.abs(deg(Math.atan2(shMid.x - hipMid.x, hipMid.y - shMid.y)));
+    const stance = rearStance(P, this.legLen);
+    const a = rearAngles(P, stance);
+    const trunkLat = a.trunkLat;
     this.live = { trunkLat, stance };
 
     if (stance) {
-      const S = SIDES[stance], C = SIDES[stance === 'L' ? 'R' : 'L'];
-      const drop = deg(Math.atan2(P[C.hip].y - P[S.hip].y, Math.abs(P[C.hip].x - P[S.hip].x)));
-      const medial = Math.sign(hipMid.x - P[S.hip].x) || 1;
-      const fppa = 180 - angleAt(P[S.hip], P[S.knee], P[S.ankle]);
-      const kneeMedial = (P[S.knee].x - (P[S.hip].x + P[S.ankle].x) / 2) * medial > 0;
-      const valgus = kneeMedial ? fppa : -fppa;
+      const drop = a.drop, valgus = a.valgus;
       if (this.stanceLeg !== stance) {
         this._finalizeStance(t);
         this.stanceLeg = stance;
@@ -253,18 +302,21 @@ export class GaitAnalyzer {
     const r = this.rear, side = this.stanceLeg;
     if (!r || !side) return;
     if (t - r.t0 < 80) return; // flicker, not a stance
-    this._push('pelvicDrop', side, r.drop);
-    this._push('kneeValgus', side, r.valgus);
-    this._push('trunkLateral', side, r.trunkLat);
+    const values = {};
+    this._push('pelvicDrop', side, r.drop, values);
+    this._push('kneeValgus', side, r.valgus, values);
+    this._push('trunkLateral', side, r.trunkLat, values);
     this.lastEvent = { type: 'STANCE', side, t };
+    this.events.push({ t: r.t0, type: 'STANCE', side, values });
   }
 
   // ---------------- metrics ----------------
-  _push(id, side, value) {
+  _push(id, side, value, bag) {
     if (!Number.isFinite(value)) return;
     const s = (this.samples[id] ??= { L: [], R: [] });
     s[side].push(value);
-    if (s[side].length > KEEP) s[side].shift();
+    if (s[side].length > this.keep) s[side].shift();
+    if (bag) bag[id] = value;
   }
 
   /** Robust (median) value per metric, overall and per side. */

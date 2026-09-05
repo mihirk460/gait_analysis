@@ -1,0 +1,16 @@
+{
+  "name": "Gait Review",
+  "short_name": "Gait Review",
+  "description": "Record a treadmill run and review it frame by frame with the analysis overlaid.",
+  "start_url": "./review.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0f14",
+  "theme_color": "#0b0f14",
+  "icons": [
+    { "src": "icons/icon-review.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icons/icon-review-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icons/icon-review-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
